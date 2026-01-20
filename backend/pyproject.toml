@@ -10,4 +10,5 @@ dependencies = [
     "pydantic-settings==2.6.1",
     "ruff>=0.14.13",
     "uvicorn==0.30.0",
+    "websockets>=16.0",
 ]

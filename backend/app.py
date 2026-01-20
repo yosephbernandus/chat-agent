@@ -3,7 +3,7 @@ Simple RAG Chat Agent - Backend
 FastAPI server with Ollama + ChromaDB
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
@@ -317,3 +317,91 @@ async def clear_documents():
         collection.delete(ids=data["ids"])
 
     return {"success": True, "deleted": len(data["ids"])}
+
+
+@app.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time bidirectional chat
+    Supports both direct and RAG modes with conversation history
+    """
+
+    # Step 1: Accept the websocket connection
+    await websocket.accept()
+    print("Client connected to WebSocket")
+
+    # Keep conversation history for this session
+    history = []
+
+    try:
+        # Step 2: Loop forever until client disconnects
+        while True:
+            # Step 3: Wait for message from client
+            data = await websocket.receive_json()
+            message = data.get("message", "")
+            mode = data.get("mode", "rag")  # direct or rag
+
+            print(f"Received: {message} (mode: {mode})")
+
+            # Step 4: Process based on mode
+            if mode == "rag":
+                # Search knowledge base
+                relevant_docs = search_documents(message, n_results=3)
+
+                # Send source first
+                await websocket.send_json(
+                    {
+                        "type": "sources",
+                        "data": [
+                            {
+                                "content": doc["content"][:100] + "...",
+                                "source": doc["source"],
+                                "score": doc["score"],
+                            }
+                            for doc in relevant_docs
+                        ],
+                    }
+                )
+
+                # Build context
+                context = "\n\n".join([doc["content"] for doc in relevant_docs])
+                prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
+
+        Context:
+        {context}
+
+        Question: {message}
+        Answer:"""
+            else:
+                # Direct mode no RAG
+                prompt = message
+                context = None
+
+            # Step 5: Build messages with history
+            messages = []
+
+            # add conversation history
+            for h in history:
+                messages.append({"role": h["role"], "content": h["content"]})
+
+            # Add current message
+            messages.append({"role": "user", "content": prompt})
+
+            # Step 6: Stream LLM response token by token
+            full_response = ""
+            for chunk in ollama.chat(model=CHAT_MODEL, messages=messages, stream=True):
+                token = chunk["message"]["content"]
+                if token:
+                    full_response += token
+                    await websocket.send_json({"type": "token", "data": token})
+
+            # Step 7: Send done signal
+            await websocket.send_json({"type": "done"})
+
+            # Step 8: Update history for multi-turn conversation
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": full_response})
+
+            print(f"Sent response: {full_response[:50]}...")
+    except WebSocketDisconnect:
+        print("Client disconnected from WebSocket")

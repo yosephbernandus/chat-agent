@@ -49,6 +49,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "ruff" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -60,6 +61,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = "==2.6.1" },
     { name = "ruff", specifier = ">=0.14.13" },
     { name = "uvicorn", specifier = "==0.30.0" },
+    { name = "websockets", specifier = ">=16.0" },
 ]
 
 [[package]]
