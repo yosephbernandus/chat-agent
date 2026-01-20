@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import './App.css'
 
 interface Source {
@@ -13,6 +13,9 @@ interface Message {
   sources?: Source[]
 }
 
+const API_BASE = 'http://localhost:8000'
+const WS_BASE = 'ws://localhost:8000'
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -20,6 +23,244 @@ function App() {
   const [connection, setConnection] = useState<'http' | 'sse' | 'websocket'>('http')
   const [isLoading, setIsLoading] = useState(false)
   const [docCount, setDocCount] = useState(0)
+  const [isWsConnected, setIsWsConnected] = useState(false)
+
+  // useRef for WebSocket - persists across renders, doesn't trigger re-render
+  const wsRef = useRef<WebSocket | null>(null)
+  const currentMessageRef = useRef<Message | null>(null)
+  const messageAddedRef = useRef(false)
+
+  // Fetch document count on mount
+  useEffect(() => {
+    fetchDocCount()
+  }, [])
+
+  // WebSocket lifecycle management
+  useEffect(() => {
+    if (connection !== 'websocket') {
+      // Close WebSocket if switching away
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+        setIsWsConnected(false)
+      }
+      // Reset message tracking refs
+      currentMessageRef.current = null
+      messageAddedRef.current = false
+      return
+    }
+
+    // Connect to WebSocket
+    const ws = new WebSocket(`${WS_BASE}/ws/chat`)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      console.log('✓ WebSocket connected')
+      setIsWsConnected(true)
+    }
+
+    ws.onclose = () => {
+      console.log('✗ WebSocket disconnected')
+      setIsWsConnected(false)
+    }
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data)
+
+      if (data.type === 'sources') {
+        // Start new message with sources (RAG mode)
+        currentMessageRef.current = {
+          role: 'assistant',
+          content: '',
+          sources: data.data
+        }
+
+        // Add initial empty message to the array
+        setMessages(prev => [...prev, { ...currentMessageRef.current! }])
+        messageAddedRef.current = true
+      } else if (data.type === 'token') {
+        // Create message if not exists (direct mode - no sources sent)
+        if (!currentMessageRef.current) {
+          currentMessageRef.current = {
+            role: 'assistant',
+            content: ''
+          }
+        }
+
+        // Append token
+        currentMessageRef.current.content += data.data
+
+        // Add or update message in the array
+        setMessages(prev => {
+          const newMessages = [...prev]
+          if (!messageAddedRef.current) {
+            // First token - add new message
+            newMessages.push({ ...currentMessageRef.current! })
+            messageAddedRef.current = true
+          } else {
+            // Update last message
+            newMessages[newMessages.length - 1] = { ...currentMessageRef.current! }
+          }
+          return newMessages
+        })
+      } else if (data.type === 'done') {
+        // Message complete - reset for next message
+        currentMessageRef.current = null
+        messageAddedRef.current = false
+        setIsLoading(false)
+      }
+    }
+
+    // Cleanup on unmount or connection change
+    return () => {
+      ws.close()
+      currentMessageRef.current = null
+      messageAddedRef.current = false
+    }
+  }, [connection])
+
+  const fetchDocCount = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/documents`)
+      const data = await res.json()
+      setDocCount(data.count)
+    } catch (error) {
+      console.error('Failed to fetch doc count:', error)
+    }
+  }, [])
+
+  // HTTP Chat
+  const sendHTTP = useCallback(async (message: string) => {
+    const endpoint = mode === 'rag' ? '/chat/rag' : '/chat'
+
+    try {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message })
+      })
+
+      const data = await res.json()
+
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: data.answer,
+        sources: data.sources
+      }])
+    } catch (error) {
+      console.error('HTTP error:', error)
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Error: Failed to get response'
+      }])
+    }
+  }, [mode])
+
+  // SSE Streaming Chat
+  const sendSSE = useCallback(async (message: string) => {
+    const endpoint = mode === 'rag' ? '/chat/rag/stream' : '/chat'
+
+    try {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message })
+      })
+
+      if (!res.body) throw new Error('No response body')
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+
+      let currentMessage: Message = { role: 'assistant', content: '' }
+      let messageIndex = messages.length + 1
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const text = decoder.decode(value)
+        const lines = text.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6)
+            try {
+              const data = JSON.parse(jsonStr)
+
+              if (data.type === 'sources') {
+                currentMessage.sources = data.content
+              } else if (data.type === 'token') {
+                currentMessage.content += data.content
+
+                setMessages(prev => {
+                  const newMessages = [...prev]
+                  if (newMessages[messageIndex]) {
+                    newMessages[messageIndex] = { ...currentMessage }
+                  } else {
+                    newMessages.push({ ...currentMessage })
+                  }
+                  return newMessages
+                })
+              } else if (data.type === 'done') {
+                // Streaming complete
+              }
+            } catch (e) {
+              // Ignore JSON parse errors for incomplete chunks
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('SSE error:', error)
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Error: Failed to stream response'
+      }])
+    }
+  }, [mode, messages.length])
+
+  const sendMessage = useCallback(async () => {
+    if (!input.trim() || isLoading) return
+
+    const userMessage = input.trim()
+    setInput('')
+    setIsLoading(true)
+
+    // Add user message
+    setMessages(prev => [...prev, { role: 'user', content: userMessage }])
+
+    try {
+      if (connection === 'http') {
+        await sendHTTP(userMessage)
+      } else if (connection === 'sse') {
+        await sendSSE(userMessage)
+      } else if (connection === 'websocket') {
+        // WebSocket
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            message: userMessage,
+            mode: mode
+          }))
+          // Don't set loading false here - wait for 'done' message
+        } else {
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: 'Error: WebSocket not connected'
+          }])
+          setIsLoading(false)
+        }
+      }
+    } catch (error) {
+      console.error('Send error:', error)
+      setIsLoading(false)
+    } finally {
+      // Only set loading false for HTTP/SSE (WebSocket handles it in onmessage)
+      if (connection !== 'websocket') {
+        setIsLoading(false)
+      }
+    }
+  }, [input, isLoading, connection, mode, sendHTTP, sendSSE])
 
   return (
     <div className="flex flex-col h-screen bg-[#2f2f2f] text-gray-100">
@@ -56,6 +297,14 @@ function App() {
             </div>
 
             <div className="text-gray-500">KB: {docCount} docs</div>
+            {connection === 'websocket' && (
+              <div className="flex items-center gap-1 text-xs">
+                <div className={`w-2 h-2 rounded-full ${isWsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span className={isWsConnected ? 'text-green-400' : 'text-red-400'}>
+                  {isWsConnected ? 'Connected' : 'Disconnected'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -86,7 +335,7 @@ function App() {
                       <div className="mb-3">
                         <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-[#3f3f3f] border border-gray-700 rounded text-xs text-gray-400">
                           <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/>
+                            <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
                           </svg>
                           Sources: {msg.sources.map(s => s.source).join(', ')}
                         </div>
@@ -133,7 +382,7 @@ function App() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyPress={(e) => {
                   if (e.key === 'Enter' && !isLoading && input.trim()) {
-                    console.log('Send:', input)
+                    sendMessage()
                   }
                 }}
                 placeholder="Reply..."
@@ -143,9 +392,7 @@ function App() {
 
               {/* Send button */}
               <button
-                onClick={() => {
-                  console.log('Send:', input)
-                }}
+                onClick={sendMessage}
                 disabled={isLoading || !input.trim()}
                 className="bg-[#9b6b4f] hover:bg-[#b07d5f] disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg px-3 py-1.5 transition-colors"
               >
