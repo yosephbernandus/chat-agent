@@ -6,6 +6,9 @@ FastAPI server with Ollama + ChromaDB
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+
+import json
 import ollama
 import chromadb
 import uuid
@@ -156,6 +159,60 @@ async def chat_rag(request: ChatRequest):
         ],
         "mode": "rag",
     }
+
+
+@app.post("/chat/rag/stream")
+async def chat_rag_stream(request: ChatRequest):
+    """
+    RAG Chat with streaming (Server-Sent Events)
+    Sends tokens as they're generated
+    """
+
+    async def generate():
+        # Step 1: Search for relevant documents
+        relevant_docs = search_documents(request.message, n_results=3)
+
+        # Step 2: Send source first
+        source_data = {
+            "type": "sources",
+            "content": [
+                {
+                    "content": doc["content"][:100] + "...",
+                    "source": doc["source"],
+                    "score": doc["score"],
+                }
+                for doc in relevant_docs
+            ],
+        }
+
+        yield f"data: {json.dumps(source_data)}\n\n"
+
+        # Step 3: Build Context and prompt
+        context = "\n\n".join([doc["content"] for doc in relevant_docs])
+        prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
+
+        Context:
+        {context}
+
+        Question: {request.message}
+
+        Answer:"""
+
+        # Step 4: Stream tokens from LLM
+        for chunk in ollama.chat(
+            model=CHAT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+        ):
+            token = chunk["message"]["content"]
+            if token:
+                token_data = {"type": "token", "content": token}
+                yield f"data: {json.dumps(token_data)}\n\n"
+
+        # Step 5: Send done signal
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/documents")
