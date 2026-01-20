@@ -59,6 +59,38 @@ def create_embedding(text: str) -> list[float]:
     return response["embeddings"][0]
 
 
+def search_documents(query: str, n_results: int = 3):
+    """
+    Search for documents similiar to the query
+    Steps:
+    1. Convert query to vector
+    2. Find similar documents in ChromaDB
+    3. Return top N results with similarity scores
+    """
+    # Embed the query
+    query_embedding = create_embedding(query)
+
+    # Search ChromaDB for similar documents
+    results = collection.query(query_embeddings=[query_embedding], n_results=n_results)
+
+    # Format results
+    documents = []
+    if results["ids"] and len(results["ids"][0]) > 0:
+        for i in range(len(results["ids"][0])):
+            documents.append(
+                {
+                    "id": results["ids"][0][i],
+                    "content": results["documents"][0][i],
+                    "source": results["metadatas"][0][i]["source"],
+                    "score": results["distances"][0][i]
+                    if "distances" in results
+                    else 0,
+                }
+            )
+
+    return documents
+
+
 # ============== Health Check ==============
 @app.get("/health")
 async def health_check():
@@ -81,6 +113,49 @@ async def chat_direct(request: ChatRequest):
     answer = response["message"]["content"]
 
     return {"answer": answer, "mode": "direct"}
+
+
+@app.post("/chat/rag")
+async def chat_rag(request: ChatRequest):
+    """
+    RAG Chat - Search knowledge base first, then generate answer
+    """
+    # Step 1: Search for relevant documents
+    relevant_docs = search_documents(request.message, n_results=3)
+
+    # Step 2: Build context from retrieved documents
+    context = "\n\n".join([doc["content"] for doc in relevant_docs])
+
+    # Step 3: Create prompt with context
+    prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
+
+    Context:
+    {context}
+
+    Question: {request.message}
+
+    Answer:"""
+
+    # Step 4: Generate answer with LLM
+    response = ollama.chat(
+        model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}]
+    )
+
+    answer = response["message"]["content"]
+
+    # Step 5: Return answer with sources
+    return {
+        "answer": answer,
+        "sources": [
+            {
+                "content": doc["content"][:100] + "...",  # Preview
+                "source": doc["source"],
+                "score": doc["score"],
+            }
+            for doc in relevant_docs
+        ],
+        "mode": "rag",
+    }
 
 
 @app.post("/documents")
