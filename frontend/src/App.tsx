@@ -76,7 +76,15 @@ function App() {
         }
 
         // Add initial empty message to the array
-        setMessages(prev => [...prev, { ...currentMessageRef.current! }])
+        setMessages(prev => {
+          if (!currentMessageRef.current) return prev
+          const messageCopy: Message = {
+            role: currentMessageRef.current.role,
+            content: currentMessageRef.current.content,
+            sources: currentMessageRef.current.sources
+          }
+          return [...prev, messageCopy]
+        })
         messageAddedRef.current = true
       } else if (data.type === 'token') {
         // Create message if not exists (direct mode - no sources sent)
@@ -90,16 +98,24 @@ function App() {
         // Append token
         currentMessageRef.current.content += data.data
 
+        // Capture message value BEFORE calling setMessages (to avoid ref timing issues)
+        const messageCopy: Message = {
+          role: currentMessageRef.current.role,
+          content: currentMessageRef.current.content,
+          sources: currentMessageRef.current.sources
+        }
+
         // Add or update message in the array
         setMessages(prev => {
           const newMessages = [...prev]
+
           if (!messageAddedRef.current) {
             // First token - add new message
-            newMessages.push({ ...currentMessageRef.current! })
+            newMessages.push(messageCopy)
             messageAddedRef.current = true
           } else {
             // Update last message
-            newMessages[newMessages.length - 1] = { ...currentMessageRef.current! }
+            newMessages[newMessages.length - 1] = messageCopy
           }
           return newMessages
         })
