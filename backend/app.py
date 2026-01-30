@@ -20,6 +20,12 @@ os.environ["ANONYMIZED_TELEMETRY"] = "False"
 CHAT_MODEL = "llama3.2:3b"
 EMBED_MODEL = "nomic-embed-text"
 
+SYSTEM_PROMPT = """You are Sya, Yoseph Bernandus's personal AI assistant. \
+When someone asks who you are, introduce yourself as: \
+"Hi! I'm Sya, Yoseph's personal assistant. You can ask me anything related to Yoseph!" \
+Always answer questions about Yoseph based on the provided context. \
+Be friendly and helpful."""
+
 
 # ============== Request Models ==============
 class ChatRequest(BaseModel):
@@ -109,7 +115,10 @@ async def chat_direct(request: ChatRequest):
     """
     # Call Ollama's chat API
     response = ollama.chat(
-        model=CHAT_MODEL, messages=[{"role": "user", "content": request.message}]
+        model=CHAT_MODEL, messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": request.message},
+        ]
     )
 
     # Extract the answer from the response
@@ -141,7 +150,10 @@ async def chat_rag(request: ChatRequest):
 
     # Step 4: Generate answer with LLM
     response = ollama.chat(
-        model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}]
+        model=CHAT_MODEL, messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
     )
 
     answer = response["message"]["content"]
@@ -201,7 +213,10 @@ async def chat_rag_stream(request: ChatRequest):
         # Step 4: Stream tokens from LLM
         for chunk in ollama.chat(
             model=CHAT_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
             stream=True,
         ):
             token = chunk["message"]["content"]
@@ -268,24 +283,28 @@ async def seed_documents():
     """
     SAMPLE_DOCS = [
         {
-            "content": "FastAPI is a modern Python web framework for building APIs. Key features: automatic docs, type hints, async support, dependency injection, very fast performance.",
-            "source": "fastapi-guide.md",
+            "content": "Yoseph Bernandus is a Software Engineer based in Jakarta, Indonesia. Contact: yosephbernandus@gmail.com, +62 877 8154 0796. LinkedIn: linkedin.com/in/yosephbernandus, GitHub: github.com/yosephbernandus, Personal site: yoseph.my.id, Blog: blog.yosephbernandus.com. He is an experienced Software Engineer with expertise in building software systems. His work has enabled products serving 30,000+ monthly user registrations, processing 800,000 transactions per month, and over $5M in monthly disbursements. He has successfully led multiple projects in the finance industry, delivering significant improvements in system performance, security, and product flow.",
+            "source": "yoseph-profile.md",
         },
         {
-            "content": "React Hooks let you use state in functional components. useState for state, useEffect for side effects, useCallback for memoized functions, useMemo for cached values.",
-            "source": "react-hooks.md",
+            "content": "Yoseph Bernandus works at PT JULO TEKNOLOGI FINANSIAL in Jakarta, Indonesia. As Lead Software Engineer (July 2025 - Present): Developed Python library optimizing Celery Worker utilization with dynamic worker addition without redeployment. Took ownership of government reporting project, improving success rate from 5% to 90%. Mentored team member to accelerate CI/CD static analysis using Ruff, reducing pipeline time from 7 minutes to 8 seconds. Guided UV package manager implementation for legacy core service, achieving 50% faster dependency builds. Co-initiated reconciliation service to automate Finance team's manual operations. As Senior Software Engineer (April 2024 - July 2025): Initiated complete redesign of Leadgen Core Product with plug-and-play architecture supporting 5 partners. Led modernization of Merchant Financing Core Product with Python/Django, UV, Ruff, and mypy. Redesigned product flow for government regulation compliance. Spearheaded SLIK credit information mechanism handling 20,000+ records daily. Partnered on cost optimization strategies for infrastructure.",
+            "source": "yoseph-julo-experience.md",
         },
         {
-            "content": "RAG (Retrieval-Augmented Generation) improves AI answers by first searching a knowledge base, then using found documents as context for the LLM to generate grounded responses.",
-            "source": "rag-guide.md",
+            "content": "Yoseph Bernandus at JULO as Software Engineer (April 2022 - March 2024): Implemented Halt & Restart feature for Grab integration, improving repayment rates by 70%. Led Leadgen product development from scratch, now contributing 10% of company traffic with 30,000+ monthly users. Fixed critical IDOR security vulnerabilities, reducing PII data exposure by 40%. Eliminated brute force attack vectors on third-party services, cutting security costs by 20%. Key contributor in designing major partner product with SNAP BI standardization handling 30,000+ monthly users and driving 40% of company traffic. Designed automated Settlement Flow for disbursements, repayments and refunds. Optimized two critical API endpoints: reduced latency from 4s to 600ms and from 2s to 200ms. Technologies: Go, Python, Django, Ansible, Terraform, Jenkins, Github Actions, PostgreSQL, Redis, Docker, Google Cloud, Bash Script, Nix Shell, Locust, Goose, HTML, Javascript, CSS, NSQ, Celery, RabbitMQ.",
+            "source": "yoseph-julo-engineer.md",
         },
         {
-            "content": "PostgreSQL optimization: use EXPLAIN ANALYZE, create proper indexes, avoid N+1 queries, use connection pooling, partition large tables.",
-            "source": "postgres-tips.md",
+            "content": "Yoseph Bernandus previous experience: At PT DANABAGUS INDONESIA (December 2019 - March 2022) as Software Developer, developed end-to-end processes handling IDR 1 billion per month. Served as PIC for audits including ISO 90001 certification and Indonesian government agencies (FDC, Pusdafil, Silaras) with no findings. Optimized database N+1 queries reducing response time from 1s to 50ms with index strategy. Created caching implementation reducing database traffic. Built CSV automation reconciliation for finance team. Technologies: Python, Django, PostgreSQL, Redis, Alicloud, Kotlin, Android Development, Firebase. At PT INFOTEK GLOBAL NETWORK (June 2014 - September 2019) as NOC Engineer, monitored ISP network infrastructure, configured Mikrotik routers and wireless access points, created internal ticketing system using PHP 5 and Javascript. Technologies: Mikrotik, Cisco, Proxmox, Ubiquity.",
+            "source": "yoseph-previous-experience.md",
         },
         {
-            "content": "Redis data structures: Strings for caching, Hashes for objects, Lists for queues, Sets for unique items, Sorted Sets for leaderboards, Pub/Sub for messaging.",
-            "source": "redis-guide.md",
+            "content": "Yoseph Bernandus education and skills: Bachelor's Degree in Computer Science from Nusantara Manado University (July 2014 - February 2018), graduated with 3.67 GPA focusing on hardware IoT. Final project: smart home prototype using Wemos D1 ESP 32 microcontroller with real-time MQTT protocol control and web app interface. Skills: Web Development, Android Development, Backend Engineering, System Design, Linux Server Configuration, Network Configuration, Project Management, Deployment Pipeline Configuration, Software Architecture. Notable projects: Academic System (Codeigniter 3), Smart Home IoT thesis project, Mikrolet real-time GPS tracking (Node.js/React), Uangku financial management app (Kotlin), Baevicca e-commerce platform, Siaptes CASN exam preparation platform.",
+            "source": "yoseph-education-skills.md",
+        },
+        {
+            "content": "I am Sya, Yoseph Bernandus's personal AI assistant. If someone asks who I am, I should introduce myself as Sya and let them know they can ask me anything related to Yoseph — his career, skills, experience, projects, education, or anything else about him. I'm here to help people learn about Yoseph Bernandus.",
+            "source": "sya-identity.md",
         },
     ]
 
@@ -378,7 +397,7 @@ async def websocket_chat(websocket: WebSocket):
                 context = None
 
             # Step 5: Build messages with history
-            messages = []
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
             # add conversation history
             for h in history:
