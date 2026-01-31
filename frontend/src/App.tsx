@@ -13,8 +13,8 @@ interface Message {
   sources?: Source[]
 }
 
-const API_BASE = 'http://localhost:8000'
-const WS_BASE = 'ws://localhost:8000'
+const API_BASE = ''
+const WS_BASE = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([])
