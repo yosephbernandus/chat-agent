@@ -13,12 +13,14 @@ import ollama
 import chromadb
 import uuid
 import os
+import asyncio
+import time
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 # ============== Configuration ==============
-CHAT_MODEL = "llama3.2:3b"
-EMBED_MODEL = "nomic-embed-text"
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "llama3.2:1b")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 
 SYSTEM_PROMPT = """You are Sya, Yoseph Bernandus's personal AI assistant. \
 When someone asks who you are, introduce yourself as: \
@@ -103,8 +105,12 @@ def search_documents(query: str, n_results: int = 3):
 # ============== Health Check ==============
 @app.get("/health")
 async def health_check():
-    """Check if server is running"""
-    return {"status": "ok"}
+    """Check if server and Ollama are reachable"""
+    try:
+        ollama.list()
+        return {"status": "ok"}
+    except Exception:
+        return {"status": "degraded", "detail": "Ollama unreachable"}
 
 
 @app.post("/chat")
@@ -177,7 +183,7 @@ async def chat_rag(request: ChatRequest):
 async def chat_rag_stream(request: ChatRequest):
     """
     RAG Chat with streaming (Server-Sent Events)
-    Sends tokens as they're generated
+    Sends tokens as they're generated, with keepalive pings
     """
 
     async def generate():
@@ -210,7 +216,8 @@ async def chat_rag_stream(request: ChatRequest):
 
         Answer:"""
 
-        # Step 4: Stream tokens from LLM
+        # Step 4: Stream tokens from LLM with keepalive
+        last_token_time = time.monotonic()
         for chunk in ollama.chat(
             model=CHAT_MODEL,
             messages=[
@@ -220,14 +227,22 @@ async def chat_rag_stream(request: ChatRequest):
             stream=True,
         ):
             token = chunk["message"]["content"]
+            now = time.monotonic()
+            if now - last_token_time > 15:
+                yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
             if token:
                 token_data = {"type": "token", "content": token}
                 yield f"data: {json.dumps(token_data)}\n\n"
+                last_token_time = now
 
         # Step 5: Send done signal
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 @app.post("/documents")
