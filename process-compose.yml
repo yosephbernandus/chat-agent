@@ -1,0 +1,41 @@
+version: "0.5"
+
+environment:
+  - "LLMOBS_ENABLED=${LLMOBS_ENABLED:-false}"
+  - "LLMOBS_ENDPOINT=${LLMOBS_ENDPOINT:-http://localhost:8000}"
+  - "LLMOBS_API_KEY=${LLMOBS_API_KEY:-}"
+  - "LLMOBS_APP=${LLMOBS_APP:-chat-agent}"
+
+processes:
+  backend-sync:
+    command: uv sync
+    working_dir: ./backend
+    availability:
+      restart: exit_on_failure
+
+  backend:
+    command: uv run uvicorn app:app --reload --port 8089
+    working_dir: ./backend
+    readiness_probe:
+      http_get:
+        host: localhost
+        port: 8089
+        path: /health
+      initial_delay_seconds: 3
+      period_seconds: 5
+    depends_on:
+      backend-sync:
+        condition: process_completed_successfully
+
+  frontend-install:
+    command: bun install
+    working_dir: ./frontend
+    availability:
+      restart: exit_on_failure
+
+  frontend:
+    command: bun run dev
+    working_dir: ./frontend
+    depends_on:
+      frontend-install:
+        condition: process_completed_successfully

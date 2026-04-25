@@ -16,11 +16,16 @@ import os
 import asyncio
 import time
 
+from observability import span, shutdown
+
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 # ============== Configuration ==============
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://192.168.1.253:11434")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "llama3.2:1b")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+
+client = ollama.Client(host=OLLAMA_HOST)
 
 SYSTEM_PROMPT = """You are Sya, Yoseph Bernandus's personal AI assistant. \
 When someone asks who you are, introduce yourself as: \
@@ -51,6 +56,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("shutdown")
+async def on_shutdown():
+    shutdown()
+
 chroma_client = chromadb.Client()
 
 try:
@@ -66,7 +75,7 @@ def create_embedding(text: str) -> list[float]:
     Convert text into a vector (list of numbers)
     Similiar texts have similar vectors
     """
-    response = ollama.embed(model=EMBED_MODEL, input=text)
+    response = client.embed(model=EMBED_MODEL, input=text)
     return response["embeddings"][0]
 
 
@@ -107,7 +116,7 @@ def search_documents(query: str, n_results: int = 3):
 async def health_check():
     """Check if server and Ollama are reachable"""
     try:
-        ollama.list()
+        client.list()
         return {"status": "ok"}
     except Exception:
         return {"status": "degraded", "detail": "Ollama unreachable"}
@@ -119,18 +128,29 @@ async def chat_direct(request: ChatRequest):
     Direct chat with LLM
     Just sends the user's message to Ollama and returns the response
     """
-    # Call Ollama's chat API
-    response = ollama.chat(
-        model=CHAT_MODEL, messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": request.message},
-        ]
-    )
+    with span("workflow", "chat-direct") as root:
+        if root:
+            root.set_input({"message": request.message})
 
-    # Extract the answer from the response
-    answer = response["message"]["content"]
+        with span("llm", "ollama-chat", model=CHAT_MODEL, provider="ollama") as s:
+            if s:
+                s.set_input(request.message)
 
-    return {"answer": answer, "mode": "direct"}
+            response = client.chat(
+                model=CHAT_MODEL, messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": request.message},
+                ]
+            )
+            answer = response["message"]["content"]
+
+            if s:
+                s.set_output(answer)
+
+        if root:
+            root.set_output({"answer": answer})
+
+        return {"answer": answer, "mode": "direct"}
 
 
 @app.post("/chat/rag")
@@ -138,14 +158,19 @@ async def chat_rag(request: ChatRequest):
     """
     RAG Chat - Search knowledge base first, then generate answer
     """
-    # Step 1: Search for relevant documents
-    relevant_docs = search_documents(request.message, n_results=3)
+    with span("workflow", "rag-chat") as root:
+        if root:
+            root.set_input({"message": request.message})
 
-    # Step 2: Build context from retrieved documents
-    context = "\n\n".join([doc["content"] for doc in relevant_docs])
+        with span("retrieval", "vector-search") as ret:
+            if ret:
+                ret.set_input(request.message)
+            relevant_docs = search_documents(request.message, n_results=3)
+            if ret:
+                ret.set_output(relevant_docs)
 
-    # Step 3: Create prompt with context
-    prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
+        context = "\n\n".join([doc["content"] for doc in relevant_docs])
+        prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
 
     Context:
     {context}
@@ -154,29 +179,38 @@ async def chat_rag(request: ChatRequest):
 
     Answer:"""
 
-    # Step 4: Generate answer with LLM
-    response = ollama.chat(
-        model=CHAT_MODEL, messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
-    )
+        with span("llm", "ollama-chat", model=CHAT_MODEL, provider="ollama") as s:
+            if s:
+                s.set_input(prompt)
 
-    answer = response["message"]["content"]
+            response = client.chat(
+                model=CHAT_MODEL, messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+            )
+            answer = response["message"]["content"]
 
-    # Step 5: Return answer with sources
-    return {
-        "answer": answer,
-        "sources": [
-            {
-                "content": doc["content"][:100] + "...",  # Preview
-                "source": doc["source"],
-                "score": doc["score"],
-            }
-            for doc in relevant_docs
-        ],
-        "mode": "rag",
-    }
+            if s:
+                s.set_output(answer)
+
+        result = {
+            "answer": answer,
+            "sources": [
+                {
+                    "content": doc["content"][:100] + "...",
+                    "source": doc["source"],
+                    "score": doc["score"],
+                }
+                for doc in relevant_docs
+            ],
+            "mode": "rag",
+        }
+
+        if root:
+            root.set_output(result)
+
+        return result
 
 
 @app.post("/chat/rag/stream")
@@ -187,27 +221,33 @@ async def chat_rag_stream(request: ChatRequest):
     """
 
     async def generate():
-        # Step 1: Search for relevant documents
-        relevant_docs = search_documents(request.message, n_results=3)
+        with span("workflow", "rag-chat-stream") as root:
+            if root:
+                root.set_input({"message": request.message})
 
-        # Step 2: Send source first
-        source_data = {
-            "type": "sources",
-            "content": [
-                {
-                    "content": doc["content"][:100] + "...",
-                    "source": doc["source"],
-                    "score": doc["score"],
-                }
-                for doc in relevant_docs
-            ],
-        }
+            with span("retrieval", "vector-search") as ret:
+                if ret:
+                    ret.set_input(request.message)
+                relevant_docs = search_documents(request.message, n_results=3)
+                if ret:
+                    ret.set_output(relevant_docs)
 
-        yield f"data: {json.dumps(source_data)}\n\n"
+            source_data = {
+                "type": "sources",
+                "content": [
+                    {
+                        "content": doc["content"][:100] + "...",
+                        "source": doc["source"],
+                        "score": doc["score"],
+                    }
+                    for doc in relevant_docs
+                ],
+            }
 
-        # Step 3: Build Context and prompt
-        context = "\n\n".join([doc["content"] for doc in relevant_docs])
-        prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
+            yield f"data: {json.dumps(source_data)}\n\n"
+
+            context = "\n\n".join([doc["content"] for doc in relevant_docs])
+            prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
 
         Context:
         {context}
@@ -216,27 +256,37 @@ async def chat_rag_stream(request: ChatRequest):
 
         Answer:"""
 
-        # Step 4: Stream tokens from LLM with keepalive
-        last_token_time = time.monotonic()
-        for chunk in ollama.chat(
-            model=CHAT_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            stream=True,
-        ):
-            token = chunk["message"]["content"]
-            now = time.monotonic()
-            if now - last_token_time > 15:
-                yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
-            if token:
-                token_data = {"type": "token", "content": token}
-                yield f"data: {json.dumps(token_data)}\n\n"
-                last_token_time = now
+            with span("llm", "ollama-chat-stream", model=CHAT_MODEL, provider="ollama") as s:
+                if s:
+                    s.set_input(prompt)
 
-        # Step 5: Send done signal
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                full_response = ""
+                last_token_time = time.monotonic()
+                for chunk in client.chat(
+                    model=CHAT_MODEL,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    stream=True,
+                ):
+                    token = chunk["message"]["content"]
+                    now = time.monotonic()
+                    if now - last_token_time > 15:
+                        yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
+                    if token:
+                        full_response += token
+                        token_data = {"type": "token", "content": token}
+                        yield f"data: {json.dumps(token_data)}\n\n"
+                        last_token_time = now
+
+                if s:
+                    s.set_output(full_response)
+
+            if root:
+                root.set_output({"answer_length": len(full_response)})
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(
         generate(),
@@ -368,74 +418,77 @@ async def websocket_chat(websocket: WebSocket):
     history = []
 
     try:
-        # Step 2: Loop forever until client disconnects
         while True:
-            # Step 3: Wait for message from client
             data = await websocket.receive_json()
             message = data.get("message", "")
-            mode = data.get("mode", "rag")  # direct or rag
+            mode = data.get("mode", "rag")
 
             print(f"Received: {message} (mode: {mode})")
 
-            # Step 4: Process based on mode
-            if mode == "rag":
-                # Search knowledge base
-                relevant_docs = search_documents(message, n_results=3)
+            with span("workflow", f"ws-chat-{mode}") as root:
+                if root:
+                    root.set_input({"message": message, "mode": mode})
 
-                # Send source first
-                await websocket.send_json(
-                    {
-                        "type": "sources",
-                        "data": [
-                            {
-                                "content": doc["content"][:100] + "...",
-                                "source": doc["source"],
-                                "score": doc["score"],
-                            }
-                            for doc in relevant_docs
-                        ],
-                    }
-                )
+                if mode == "rag":
+                    with span("retrieval", "vector-search") as ret:
+                        if ret:
+                            ret.set_input(message)
+                        relevant_docs = search_documents(message, n_results=3)
+                        if ret:
+                            ret.set_output(relevant_docs)
 
-                # Build context
-                context = "\n\n".join([doc["content"] for doc in relevant_docs])
-                prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
+                    await websocket.send_json(
+                        {
+                            "type": "sources",
+                            "data": [
+                                {
+                                    "content": doc["content"][:100] + "...",
+                                    "source": doc["source"],
+                                    "score": doc["score"],
+                                }
+                                for doc in relevant_docs
+                            ],
+                        }
+                    )
+
+                    context = "\n\n".join([doc["content"] for doc in relevant_docs])
+                    prompt = f"""Answer the question based on the following context. If the context doesn't contain relevant information, say so.
 
         Context:
         {context}
 
         Question: {message}
         Answer:"""
-            else:
-                # Direct mode no RAG
-                prompt = message
-                context = None
+                else:
+                    prompt = message
 
-            # Step 5: Build messages with history
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                for h in history:
+                    messages.append({"role": h["role"], "content": h["content"]})
+                messages.append({"role": "user", "content": prompt})
 
-            # add conversation history
-            for h in history:
-                messages.append({"role": h["role"], "content": h["content"]})
+                with span("llm", "ollama-chat-ws", model=CHAT_MODEL, provider="ollama") as s:
+                    if s:
+                        s.set_input(prompt)
 
-            # Add current message
-            messages.append({"role": "user", "content": prompt})
+                    full_response = ""
+                    for chunk in client.chat(model=CHAT_MODEL, messages=messages, stream=True):
+                        token = chunk["message"]["content"]
+                        if token:
+                            full_response += token
+                            await websocket.send_json({"type": "token", "data": token})
 
-            # Step 6: Stream LLM response token by token
-            full_response = ""
-            for chunk in ollama.chat(model=CHAT_MODEL, messages=messages, stream=True):
-                token = chunk["message"]["content"]
-                if token:
-                    full_response += token
-                    await websocket.send_json({"type": "token", "data": token})
+                    if s:
+                        s.set_output(full_response)
 
-            # Step 7: Send done signal
-            await websocket.send_json({"type": "done"})
+                await websocket.send_json({"type": "done"})
 
-            # Step 8: Update history for multi-turn conversation
-            history.append({"role": "user", "content": message})
-            history.append({"role": "assistant", "content": full_response})
+                history.append({"role": "user", "content": message})
+                history.append({"role": "assistant", "content": full_response})
 
-            print(f"Sent response: {full_response[:50]}...")
+                if root:
+                    root.set_output({"answer_length": len(full_response)})
+
+                print(f"Sent response: {full_response[:50]}...")
     except WebSocketDisconnect:
         print("Client disconnected from WebSocket")

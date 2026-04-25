@@ -34,36 +34,36 @@ install:
 
 setup: install
 	@echo "Starting backend..."
-	cd backend && python -m uvicorn app:app --port 8000 > /tmp/backend.log 2>&1 &
+	cd backend && python -m uvicorn app:app --port 8089 > /tmp/backend.log 2>&1 &
 	@sleep 3
 	@echo "Seeding sample documents..."
-	@curl -s -X POST http://localhost:8000/documents/seed > /dev/null
+	@curl -s -X POST http://localhost:8089/documents/seed > /dev/null
 	@pkill -f "python -m uvicorn"
 	@echo "Setup complete. Run 'make dev' to start"
 
 backend:
-	cd backend && python -m uvicorn app:app --reload --port 8000
+	cd backend && python -m uvicorn app:app --reload --port 8089
 
 frontend:
 	cd frontend && bun run dev
 
 dev:
 	@echo "Starting servers..."
-	@echo "Backend: http://localhost:8000"
+	@echo "Backend: http://localhost:8089"
 	@echo "Frontend: http://localhost:5173"
 	@echo ""
-	@(cd backend && python -m uvicorn app:app --reload --port 8000) & \
+	@(cd backend && python -m uvicorn app:app --reload --port 8089) & \
 	(cd frontend && bun run dev) & \
 	wait
 
 health:
-	@curl -s http://localhost:8000/health | jq .
+	@curl -s http://localhost:8089/health | jq .
 
 seed:
-	curl -X POST http://localhost:8000/documents/seed | jq .
+	curl -X POST http://localhost:8089/documents/seed | jq .
 
 clear-docs:
-	curl -X DELETE http://localhost:8000/documents | jq .
+	curl -X DELETE http://localhost:8089/documents | jq .
 
 lint:
 	cd frontend && bun run lint

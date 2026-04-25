@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "chromadb==0.5.20",
     "fastapi==0.115.0",
+    "llmobs-sdk",
     "ollama==0.3.3",
     "pydantic==2.9.2",
     "pydantic-settings==2.6.1",
@@ -12,3 +13,6 @@ dependencies = [
     "uvicorn==0.30.0",
     "websockets>=16.0",
 ]
+
+[tool.uv.sources]
+llmobs-sdk = { path = "../../llmobs-project/llmobs-sdk" }
