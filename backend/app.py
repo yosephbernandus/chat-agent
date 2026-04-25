@@ -153,6 +153,56 @@ async def chat_direct(request: ChatRequest):
         return {"answer": answer, "mode": "direct"}
 
 
+@app.post("/chat/stream")
+async def chat_direct_stream(request: ChatRequest):
+    """
+    Direct chat with streaming (Server-Sent Events)
+    """
+
+    async def generate():
+        with span("workflow", "chat-direct-stream") as root:
+            if root:
+                root.set_input({"message": request.message})
+
+            with span("llm", "ollama-chat-stream", model=CHAT_MODEL, provider="ollama") as s:
+                if s:
+                    s.set_input(request.message)
+
+                full_response = ""
+                last_token_time = time.monotonic()
+                for chunk in client.chat(
+                    model=CHAT_MODEL,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": request.message},
+                    ],
+                    stream=True,
+                ):
+                    token = chunk["message"]["content"]
+                    now = time.monotonic()
+                    if now - last_token_time > 15:
+                        yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
+                    if token:
+                        full_response += token
+                        token_data = {"type": "token", "content": token}
+                        yield f"data: {json.dumps(token_data)}\n\n"
+                        last_token_time = now
+
+                if s:
+                    s.set_output(full_response)
+
+            if root:
+                root.set_output({"answer_length": len(full_response)})
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
 @app.post("/chat/rag")
 async def chat_rag(request: ChatRequest):
     """

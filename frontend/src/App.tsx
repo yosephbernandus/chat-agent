@@ -174,7 +174,7 @@ function App() {
 
   // SSE Streaming Chat
   const sendSSE = useCallback(async (message: string) => {
-    const endpoint = mode === 'rag' ? '/chat/rag/stream' : '/chat'
+    const endpoint = mode === 'rag' ? '/chat/rag/stream' : '/chat/stream'
 
     try {
       const res = await fetch(`${API_BASE}${endpoint}`, {
