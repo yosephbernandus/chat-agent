@@ -651,12 +651,16 @@ dependencies = [
 requires-dist = [
     { name = "asyncpg", marker = "extra == 'dev'" },
     { name = "httpx", specifier = "~=0.27" },
+    { name = "litellm", marker = "extra == 'judge'", specifier = ">=1.40" },
     { name = "msgspec", specifier = "~=0.18" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "pytest-httpx", marker = "extra == 'dev'" },
+    { name = "sentence-transformers", marker = "extra == 'similarity'", specifier = ">=2.2" },
+    { name = "torch", marker = "extra == 'toxicity'", specifier = ">=2.0" },
+    { name = "transformers", marker = "extra == 'toxicity'", specifier = ">=4.30" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "judge", "similarity", "toxicity"]
 
 [[package]]
 name = "markdown-it-py"
